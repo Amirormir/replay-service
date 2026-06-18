@@ -1,13 +1,14 @@
 # Nexus League — Replay Stats Microservice
 
+**Repo:** https://github.com/Amirormir/replay-service
+
 Parse League of Legends `.rofl` replay files and return scoreboard stats
 shaped to feed Prisma `PlayerMatchStats` rows. Built for the Nexus League
 admin flow: instead of typing game stats by hand, upload the replay and let
 the service extract them.
 
 > The encrypted payload (chunks/keyframes) is **not** decoded — we only read
-> the JSON metadata blob, which is enough for the scoreboard. See
-> [`../scrapper.md`](../scrapper.md) for the full design notes.
+> the JSON metadata blob, which is enough for the scoreboard.
 
 ## Install
 
@@ -147,7 +148,7 @@ drop a real replay in `tests/fixtures/` (gitignored).
 - Multi-replay batch endpoint.
 - Riot Tournament API.
 - Decoding the encrypted payload (positions, wards, pathing). This needs an
-  emulator and changes every patch — see `scrapper.md`.
+  emulator and changes every patch.
 
 ## Layout reference
 
