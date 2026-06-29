@@ -12,10 +12,16 @@ Designed to be called from the Nexus League admin tRPC layer:
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
+import os
 import tempfile
+import time
 from pathlib import Path
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 
 from . import __version__
 from .models import ParsedReplay
@@ -31,13 +37,68 @@ app = FastAPI(
     description="Extract scoreboard stats from .rofl replay files.",
 )
 
+# Le navigateur uploade les .rofl directement ici (cross-origin depuis l'app
+# web), pour contourner la limite de 4,5 Mo des fonctions serverless Vercel.
+# ALLOWED_ORIGINS = liste separee par des virgules, ou "*" (defaut).
+_origins_env = os.environ.get("ALLOWED_ORIGINS", "*").strip()
+_allow_origins = (
+    ["*"]
+    if _origins_env == "*"
+    else [o.strip() for o in _origins_env.split(",") if o.strip()]
+)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_allow_origins,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["*"],
+    allow_credentials=False,
+)
+
+
+def _sign_ticket(secret: str, message: str) -> str:
+    digest = hmac.new(secret.encode(), message.encode(), hashlib.sha256).digest()
+    return base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
+
+
+def require_ticket(authorization: str | None = Header(default=None)) -> None:
+    """Valide le ticket d'upload signe (HMAC-SHA256) emis par l'app web.
+
+    Format attendu : `Bearer <exp>.<base64url(hmac)>` ou exp est un timestamp
+    UNIX en secondes. Si REPLAY_UPLOAD_SECRET n'est pas defini (dev local),
+    l'authentification est desactivee.
+    """
+    secret = os.environ.get("REPLAY_UPLOAD_SECRET")
+    if not secret:
+        return
+
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="missing upload ticket")
+
+    token = authorization[len("Bearer ") :]
+    dot = token.find(".")
+    if dot <= 0:
+        raise HTTPException(status_code=401, detail="malformed upload ticket")
+
+    exp_part, sig_part = token[:dot], token[dot + 1 :]
+    try:
+        exp = int(exp_part)
+    except ValueError as e:
+        raise HTTPException(status_code=401, detail="malformed upload ticket") from e
+
+    if exp < int(time.time()):
+        raise HTTPException(status_code=401, detail="upload ticket expired")
+
+    expected = _sign_ticket(secret, exp_part)
+    if not hmac.compare_digest(sig_part, expected):
+        raise HTTPException(status_code=401, detail="invalid upload ticket")
+
 
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok", "version": __version__}
 
 
-@app.post("/replays", response_model=ParsedReplay)
+@app.post("/replays", response_model=ParsedReplay, dependencies=[Depends(require_ticket)])
 async def parse_replay(file: UploadFile = File(...)) -> ParsedReplay:
     if not file.filename or not file.filename.lower().endswith(".rofl"):
         raise HTTPException(status_code=400, detail="expected a .rofl file")
